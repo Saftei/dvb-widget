@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DVB Abfahrten – Prager Straße</title>
+  <style>
+    :root {
+      --bg: #111;
+      --surface: #1c1c1e;
+      --border: #2a2a2e;
+      --accent: #f5c000;
+      --text: #f0f0f0;
+      --muted: #888;
+      --tram: #e84c2b;
+      --bus: #2c7ed6;
+      --green: #34c759;
+      --red: #ff3b30;
+      --yellow: #f5c000;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "SF Pro Display", "Helvetica Neue", sans-serif;
+      padding: 12px;
+      min-height: 100vh;
+    }
+
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+      margin-bottom: 12px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .stop-name {
+      font-size: 1.5rem;
+      font-weight: 700;
+      color: var(--accent);
+      letter-spacing: 0.02em;
+    }
+
+    .stop-sub {
+      font-size: 0.95rem;
+      color: var(--muted);
+      margin-top: 2px;
+    }
+
+    .clock {
+      font-size: 2rem;
+      font-weight: 300;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: 0.05em;
+    }
+
+    .departure {
+      display: grid;
+      grid-template-columns: 48px 1fr auto;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 0;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .departure:last-child { border-bottom: none; }
+
+    .line-badge {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 54px;
+      height: 36px;
+      border-radius: 6px;
+      font-weight: 800;
+      font-size: 1.1rem;
+      letter-spacing: 0.02em;
+      flex-shrink: 0;
+    }
+
+    .line-badge.tram { background: var(--tram); color: #fff; }
+    .line-badge.bus  { background: var(--bus);  color: #fff; }
+    .line-badge.sbahn { background: #6e4fbf; color: #fff; }
+    .line-badge.other { background: #555; color: #fff; }
+
+    .dest {
+      font-size: 1.1rem;
+      font-weight: 500;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .platform {
+      font-size: 0.85rem;
+      color: var(--muted);
+      margin-top: 2px;
+    }
+
+    .time-col {
+      text-align: right;
+      flex-shrink: 0;
+    }
+
+    .minutes {
+      font-size: 1.4rem;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .minutes.now   { color: var(--green); }
+    .minutes.soon  { color: var(--yellow); }
+    .minutes.later { color: var(--text); }
+
+    .realtime {
+      font-size: 0.85rem;
+      color: var(--muted);
+      margin-top: 1px;
+    }
+
+    .realtime.delayed { color: var(--red); }
+    .realtime.ontime  { color: var(--green); }
+
+    .status-bar {
+      margin-top: 10px;
+      font-size: 0.65rem;
+      color: var(--muted);
+      text-align: right;
+    }
+
+    .error-msg {
+      color: var(--red);
+      font-size: 0.8rem;
+      padding: 20px 0;
+      text-align: center;
+    }
+
+    .loading {
+      color: var(--muted);
+      font-size: 0.8rem;
+      padding: 20px 0;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <div>
+    <div class="stop-name">🚊 Prager Straße</div>
+    <div class="stop-sub">Nächste Abfahrten</div>
+  </div>
+  <div class="clock" id="clock">--:--</div>
+</header>
+
+<div id="departures">
+  <div class="loading">Lade Abfahrten…</div>
+</div>
+
+<div class="status-bar" id="status"></div>
+
+<script>
+  const STOP_ID   = "33000003";
+  const LIMIT     = 12;
+  const REFRESH   = 30_000; // ms
+
+  const MOT_CLASS = {
+    Tram: "tram",
+    CityBus: "bus",
+    IntercityBus: "bus",
+    SuburbanRailway: "sbahn",
+    Train: "sbahn",
+  };
+
+  function parseMsDate(dateStr) {
+    // /Date(1234567890+0200)/ → Date object
+    const m = /\/Date\((\d+)([+-]\d+)?\)\//.exec(dateStr);
+    return m ? new Date(parseInt(m[1])) : null;
+  }
+
+  function fmtTime(date) {
+    if (!date) return "";
+    return date.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
+  }
+
+  function minutesUntil(date) {
+    return Math.round((date - Date.now()) / 60000);
+  }
+
+  function minuteLabel(min) {
+    if (min <= 0) return "jetzt";
+    return `${min} min`;
+  }
+
+  function minuteClass(min) {
+    if (min <= 1) return "now";
+    if (min <= 5) return "soon";
+    return "later";
+  }
+
+  function motClass(mot) {
+    return MOT_CLASS[mot] || "other";
+  }
+
+  function updateClock() {
+    const now = new Date();
+    document.getElementById("clock").textContent =
+      now.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
+  }
+
+  async function fetchDepartures() {
+    const res = await fetch("https://webapi.vvo-online.de/dm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        stopid: STOP_ID,
+        limit: LIMIT,
+        shorttermchanges: true,
+        mot: ["Tram","CityBus","IntercityBus","SuburbanRailway","Train","Cableway","Ferry","HailedSharedTaxi"]
+      })
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  }
+
+  function renderDepartures(data) {
+    const container = document.getElementById("departures");
+
+    if (!data.Departures || data.Departures.length === 0) {
+      container.innerHTML = '<div class="loading">Keine Abfahrten gefunden.</div>';
+      return;
+    }
+
+    const items = data.Departures.map(dep => {
+      const scheduled = parseMsDate(dep.ScheduledTime);
+      const realTime  = dep.RealTime ? parseMsDate(dep.RealTime) : scheduled;
+      const useTime   = realTime || scheduled;
+      const min       = minutesUntil(useTime);
+      const delayed   = realTime && scheduled && (realTime - scheduled) > 60000;
+      const motCls    = motClass(dep.Mot);
+
+      const platformTxt = dep.Platform?.Name ? `Steig ${dep.Platform.Name}` : "";
+      const realtimeTxt = delayed
+        ? `+${Math.round((realTime - scheduled)/60000)} min (${fmtTime(realTime)})`
+        : fmtTime(scheduled);
+      const realtimeCls = delayed ? "delayed" : "ontime";
+
+      return `
+        <div class="departure">
+          <div class="line-badge ${motCls}">${dep.LineName}</div>
+          <div>
+            <div class="dest">${dep.Direction}</div>
+            ${platformTxt ? `<div class="platform">${platformTxt}</div>` : ""}
+          </div>
+          <div class="time-col">
+            <div class="minutes ${minuteClass(min)}">${minuteLabel(min)}</div>
+            <div class="realtime ${realtimeCls}">${realtimeTxt}</div>
+          </div>
+        </div>`;
+    }).join("");
+
+    container.innerHTML = items;
+  }
+
+  async function refresh() {
+    try {
+      const data = await fetchDepartures();
+      renderDepartures(data);
+      document.getElementById("status").textContent =
+        `Aktualisiert: ${new Date().toLocaleTimeString("de-DE", {hour:"2-digit",minute:"2-digit",second:"2-digit"})}`;
+    } catch (e) {
+      document.getElementById("departures").innerHTML =
+        `<div class="error-msg">⚠️ Fehler beim Laden: ${e.message}</div>`;
+    }
+  }
+
+  // Init
+  updateClock();
+  setInterval(updateClock, 10_000);
+  refresh();
+  setInterval(refresh, REFRESH);
+</script>
+</body>
+</html>
